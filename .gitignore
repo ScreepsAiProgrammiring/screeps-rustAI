@@ -8,6 +8,11 @@ pkg
 ################
 node_modules
 
+# Build Files #
+############
+
+Cargo.lock
+
 # Packages #
 ############
 *.7z
