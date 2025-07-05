@@ -89,7 +89,7 @@ pub fn get_expected_count(role: Role) -> i32 {
         Role::Harvester => 2,
         Role::Upgrader => 3,
         Role::Builder => 3,
-        //Role::Repairer => 2
+        Role::Repairer => 2,
         _ => 0,
     }
 }

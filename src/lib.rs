@@ -1,4 +1,4 @@
-use crate::basic_tasks::{build_construction, harvest_energy, transfer_energy, upgrade_controller};
+use crate::basic_tasks::{build_construction, harvest_energy, repair_structure, transfer_energy, upgrade_controller};
 use crate::creep_roles::*;
 
 use std::{
@@ -16,7 +16,7 @@ use screeps::{
     local::ObjectId,
     objects::{Creep, Source, StructureController},
     prelude::*,
-    ConstructionSite, SpawnOptions,
+    ConstructionSite, SpawnOptions, Structure, StructureType,
 };
 use screeps::{StructureExtension, StructureSpawn};
 use wasm_bindgen::prelude::*;
@@ -44,6 +44,7 @@ enum CreepTarget {
     Harvest(ObjectId<Source>),
     Upgrade(ObjectId<StructureController>),
     Build(ObjectId<ConstructionSite>),
+    Repair(StructureObject),
     TransferEnergyToSpawn(ObjectId<StructureSpawn>), //TODO: think about better solution
     TransferEnergyToExtention(ObjectId<StructureExtension>),
 }
@@ -147,6 +148,7 @@ fn run_creep(creep: &Creep, creep_targets: &mut HashMap<String, CreepTarget>) {
                 CreepTarget::Harvest(source_id) => harvest_energy(&creep, &source_id),
                 CreepTarget::Upgrade(controller_id) => upgrade_controller(&creep, &controller_id),
                 CreepTarget::Build(construction_id) => build_construction(&creep, &construction_id),
+                CreepTarget::Repair(structure_id) => repair_structure(&creep, &structure_id),
                 CreepTarget::TransferEnergyToSpawn(spawn_id) => transfer_energy(&creep, &spawn_id),
                 CreepTarget::TransferEnergyToExtention(extention_id) => {
                     transfer_energy(&creep, &extention_id)
@@ -185,6 +187,34 @@ fn run_creep(creep: &Creep, creep_targets: &mut HashMap<String, CreepTarget>) {
                                 entry.insert(CreepTarget::Build(id));
                                 break;
                             }
+                        }
+                    } else {
+                        // Не заполнен - продолжаем собирать энергию
+                        if let Some(source) = room.find(find::SOURCES_ACTIVE, None).first() {
+                            entry.insert(CreepTarget::Harvest(source.id()));
+                        }
+                    }
+                }
+                Role::Repairer => {
+                    if creep.store().get_free_capacity(Some(ResourceType::Energy)) == 0 {
+                        // Полностью заполнен - ищем самое повреждённое здание для ремонта
+                        let mut most_damaged_structure: Option<StructureObject> = None;
+                        let mut lowest_hits_ratio = 1.0; // 1.0 = полностью здоровое
+                        
+                        for structure in room.find(find::STRUCTURES, None).iter() {
+                            // Проверяем, что это ремонтируемая структура и не контроллер
+                            let structure_ref = structure.as_structure();
+                            if structure_ref.structure_type() != StructureType::Controller {
+                                let hits_ratio = structure_ref.hits() as f64 / structure_ref.hits_max() as f64;
+                                if hits_ratio < lowest_hits_ratio && hits_ratio < 1.0 {
+                                    lowest_hits_ratio = hits_ratio;
+                                    most_damaged_structure = Some(structure.clone());
+                                }
+                            }
+                        }
+                        
+                        if let Some(structure_obj) = most_damaged_structure {
+                            entry.insert(CreepTarget::Repair(structure_obj));
                         }
                     } else {
                         // Не заполнен - продолжаем собирать энергию
