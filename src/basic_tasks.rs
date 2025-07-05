@@ -1,5 +1,6 @@
-use log::{info, warn};
+use log::{warn};
 use screeps::*;
+use screeps::action_error_codes::{UpgradeControllerErrorCode, BuildErrorCode, TransferErrorCode};
 
 // TODO: returning status (with errors) instead bool "task done"
 
@@ -11,7 +12,7 @@ pub fn upgrade_controller(creep: &Creep, controller_id: &ObjectId<StructureContr
             creep
                 .upgrade_controller(&controller)
                 .unwrap_or_else(|e| match e {
-                    ErrorCode::NotInRange => {
+                    UpgradeControllerErrorCode::NotInRange => {
                         creep.move_to(&controller);
                     }
                     _ => {
@@ -53,16 +54,16 @@ pub fn build_construction(creep: &Creep, construction_id: &ObjectId<Construction
         if let Some(construction_site) = construction_id.resolve() {
             task_done = false;
             creep.build(&construction_site).unwrap_or_else(|e| match e {
-                ErrorCode::NotInRange => {
+                BuildErrorCode::NotInRange => {
                     let _ = creep.move_to(&construction_site);
                 }
                 _ => {
-                    warn!("couldn't upgrade: {:?}", e);
+                    warn!("couldn't build: {:?}", e);
                     task_done = true;
                 }
             });
         } else {
-            warn!("couldn't resolve controller!");
+            warn!("couldn't resolve construction site!");
             task_done = true;
         }
     };
@@ -81,16 +82,16 @@ pub fn transfer_energy(
             creep
                 .transfer(&structure, ResourceType::Energy, None)
                 .unwrap_or_else(|e| match e {
-                    ErrorCode::NotInRange => {
+                    TransferErrorCode::NotInRange => {
                         creep.move_to(&structure);
                     }
                     _ => {
-                        warn!("couldn't upgrade: {:?}", e);
+                        warn!("couldn't transfer: {:?}", e);
                         task_done = true;
                     }
                 });
         } else {
-            warn!("couldn't resolve controller!");
+            warn!("couldn't resolve structure!");
             task_done = true;
         }
     };

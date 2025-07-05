@@ -1,4 +1,3 @@
-use std::panic::PanicInfo;
 use std::{fmt::Write, panic};
 
 use js_sys::JsString;

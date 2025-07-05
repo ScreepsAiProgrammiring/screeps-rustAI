@@ -10,16 +10,15 @@ use std::{
 use js_sys::{JsString, Object, Reflect};
 use log::*;
 use screeps::{
-    action_error_codes::*,
     constants::{Part, ResourceType},
     enums::StructureObject,
     find, game,
     local::ObjectId,
     objects::{Creep, Source, StructureController},
     prelude::*,
-    ConstructionSite, SpawnOptions, Structure,
+    ConstructionSite, SpawnOptions,
 };
-use screeps::{StructureExtension, StructureSpawn, spawn};
+use screeps::{StructureExtension, StructureSpawn};
 use wasm_bindgen::prelude::*;
 
 mod logging;
@@ -163,31 +162,40 @@ fn run_creep(creep: &Creep, creep_targets: &mut HashMap<String, CreepTarget>) {
 
             match get_creep_role(creep) {
                 Role::Upgrader => {
-                    if creep.store().get_used_capacity(Some(ResourceType::Energy)) > 0 {
+                    if creep.store().get_free_capacity(Some(ResourceType::Energy)) == 0 {
+                        // Полностью заполнен - идём улучшать контроллер
                         for structure in room.find(find::STRUCTURES, None).iter() {
                             if let StructureObject::StructureController(controller) = structure {
                                 entry.insert(CreepTarget::Upgrade(controller.id()));
                                 break;
                             }
                         }
-                    } else if let Some(source) = room.find(find::SOURCES_ACTIVE, None).first() {
-                        entry.insert(CreepTarget::Harvest(source.id()));
+                    } else {
+                        // Не заполнен - продолжаем собирать энергию
+                        if let Some(source) = room.find(find::SOURCES_ACTIVE, None).first() {
+                            entry.insert(CreepTarget::Harvest(source.id()));
+                        }
                     }
                 }
                 Role::Builder => {
-                    if creep.store().get_used_capacity(Some(ResourceType::Energy)) > 0 {
+                    if creep.store().get_free_capacity(Some(ResourceType::Energy)) == 0 {
+                        // Полностью заполнен - идём строить
                         for construction_site in room.find(find::CONSTRUCTION_SITES, None).iter() {
                             if let Some(id) = construction_site.try_id() {
                                 entry.insert(CreepTarget::Build(id));
                                 break;
                             }
                         }
-                    } else if let Some(source) = room.find(find::SOURCES_ACTIVE, None).first() {
-                        entry.insert(CreepTarget::Harvest(source.id()));
+                    } else {
+                        // Не заполнен - продолжаем собирать энергию
+                        if let Some(source) = room.find(find::SOURCES_ACTIVE, None).first() {
+                            entry.insert(CreepTarget::Harvest(source.id()));
+                        }
                     }
                 }
                 Role::Harvester => {
-                    if creep.store().get_used_capacity(Some(ResourceType::Energy)) > 0 {
+                    if creep.store().get_free_capacity(Some(ResourceType::Energy)) == 0 {
+                        // Полностью заполнен - ищем куда передать энергию
                         for structure in room.find(find::STRUCTURES, None).iter() {
                             //TODO: filter instead of None
                             if let StructureObject::StructureSpawn(spawn) = structure {
@@ -204,8 +212,16 @@ fn run_creep(creep: &Creep, creep_targets: &mut HashMap<String, CreepTarget>) {
                                 }
                             };
                         }
-                    } else if let Some(source) = room.find(find::SOURCES_ACTIVE, None).first() {
-                        entry.insert(CreepTarget::Harvest(source.id()));
+                    } else if creep.store().get_used_capacity(Some(ResourceType::Energy)) > 0 {
+                        // Есть энергия, но хранилище не заполнено - продолжаем собирать
+                        if let Some(source) = room.find(find::SOURCES_ACTIVE, None).first() {
+                            entry.insert(CreepTarget::Harvest(source.id()));
+                        }
+                    } else {
+                        // Нет энергии - идём собирать
+                        if let Some(source) = room.find(find::SOURCES_ACTIVE, None).first() {
+                            entry.insert(CreepTarget::Harvest(source.id()));
+                        }
                     }
                 }
                 _ => {
