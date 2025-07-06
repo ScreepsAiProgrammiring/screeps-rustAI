@@ -1,53 +1,37 @@
-use crate::basic_tasks::{build_construction, harvest_energy, repair_structure, transfer_energy, upgrade_controller};
-use crate::creep_roles::*;
+use crate::room_manager::RoomManager;
+use crate::creep_manager::CreepManager;
 
 use std::{
     cell::RefCell,
-    collections::{hash_map::Entry, HashMap, HashSet},
-    //marker::UnsizedConstParamTy,
+    collections::HashSet,
 };
 
 use js_sys::{JsString, Object, Reflect};
 use log::*;
 use screeps::{
-    constants::{Part, ResourceType},
-    enums::StructureObject,
-    find, game,
-    local::ObjectId,
-    objects::{Creep, Source, StructureController},
+    game,
     prelude::*,
-    ConstructionSite, SpawnOptions, Structure, StructureType,
 };
-use screeps::{StructureExtension, StructureSpawn};
 use wasm_bindgen::prelude::*;
 
 mod logging;
+mod task_system;
+mod task_executor;
+mod creep_manager;
+mod spawn_manager;
+mod room_manager;
 
-mod basic_tasks;
-mod creep_roles;
 
-use strum::IntoEnumIterator;
 
-// this is one way to persist data between ticks within Rust's memory, as opposed to
-// keeping state in memory on game objects - but will be lost on global resets!
+// Глобальные менеджеры для управления задачами и крипами
 thread_local! {
-    static CREEP_TARGETS: RefCell<HashMap<String, CreepTarget>> = RefCell::new(HashMap::new());
+    static ROOM_MANAGER: RefCell<RoomManager> = RefCell::new(RoomManager::new());
+    static CREEP_MANAGER: RefCell<CreepManager> = RefCell::new(CreepManager::new());
 }
 
 static INIT_LOGGING: std::sync::Once = std::sync::Once::new();
 
-// this enum will represent a creep's lock on a specific target object, storing a js reference
-// to the object id so that we can grab a fresh reference to the object each successive tick,
-// since screeps game objects become 'stale' and shouldn't be used beyond the tick they were fetched
-#[derive(Clone)]
-enum CreepTarget {
-    Harvest(ObjectId<Source>),
-    Upgrade(ObjectId<StructureController>),
-    Build(ObjectId<ConstructionSite>),
-    Repair(StructureObject),
-    TransferEnergyToSpawn(ObjectId<StructureSpawn>), //TODO: think about better solution
-    TransferEnergyToExtention(ObjectId<StructureExtension>),
-}
+
 
 // add wasm_bindgen to any function you would like to expose for call from js
 // to use a reserved name as a function name, use `js_name`:
@@ -60,50 +44,34 @@ pub fn game_loop() {
 
     debug!("loop starting! CPU: {}", game::cpu::get_used());
 
-    // mutably borrow the creep_targets refcell, which is holding our creep target locks
-    // in the wasm heap
-    CREEP_TARGETS.with(|creep_targets_refcell| {
-        let mut creep_targets = creep_targets_refcell.borrow_mut();
-        debug!("running creeps");
-        for creep in game::creeps().values() {
-            run_creep(&creep, &mut creep_targets);
-        }
-    });
+    // Запускаем менеджеры
+    ROOM_MANAGER.with(|room_manager_refcell| {
+        CREEP_MANAGER.with(|creep_manager_refcell| {
+            let mut room_manager = room_manager_refcell.borrow_mut();
+            let mut creep_manager = creep_manager_refcell.borrow_mut();
 
-    debug!("running spawns");
-    for spawn in game::spawns().values() {
-        debug!("running spawn {}", spawn.name());
+            // Обновляем задачи для всех комнат
+            room_manager.run_rooms();
 
-        let body = [Part::Move, Part::Move, Part::Carry, Part::Work];
-        if spawn.room().unwrap().energy_available() >= body.iter().map(|p| p.cost()).sum() {
-            for role in Role::iter() {
-                let expected_count = get_expected_count(role);
-                let mut curr_count: i32 = 0;
-
-                for creep in game::creeps().values() {
-                    // TODO: full check over every role! -> get rid of "for"
-                    if get_creep_role(&creep) == role {
-                        curr_count += 1;
-                    }
-                }
-
-                if curr_count < expected_count {
-                    let name = format!("{}-{}", role.to_int(), game::time());
-
-                    let spawn_options: SpawnOptions = set_creep_role_2(role);
-
-                    match spawn.spawn_creep_with_options(&body, &name, &spawn_options) {
-                        Ok(()) => (),
-                        Err(e) => warn!("couldn't spawn: {:?}", e),
-                    }
-                    break;
+            // Запускаем всех крипов
+            debug!("running creeps");
+            for creep in game::creeps().values() {
+                if let Some(room) = creep.room() {
+                    let task_board = room_manager.get_task_board(&room.name());
+                    creep_manager.run_creep(&creep, task_board);
                 }
             }
-        }
-    }
 
-    // memory cleanup; memory gets created for all creeps upon spawning, and any time move_to
-    // is used; this should be removed if you're using RawMemory/serde for persistence
+            // Очищаем мертвых крипов
+            creep_manager.cleanup_dead_creeps();
+        });
+    });
+
+    // Запускаем спавны
+    debug!("running spawns");
+    spawn_manager::SpawnManager::run_spawns();
+
+    // Очистка памяти
     if game::time() % 1000 == 0 {
         info!("running memory cleanup");
         let mut alive_creeps = HashSet::new();
@@ -128,137 +96,15 @@ pub fn game_loop() {
                 }
             }
         }
+
+        // Очищаем пустые комнаты
+        ROOM_MANAGER.with(|room_manager_refcell| {
+            let mut room_manager = room_manager_refcell.borrow_mut();
+            room_manager.cleanup_empty_rooms();
+        });
     }
 
     info!("done! cpu: {}", game::cpu::get_used())
 }
 
-fn run_creep(creep: &Creep, creep_targets: &mut HashMap<String, CreepTarget>) {
-    if creep.spawning() {
-        return;
-    }
-    let name = creep.name();
-    debug!("running creep {}", name);
 
-    let target: Entry<'_, String, CreepTarget> = creep_targets.entry(name);
-    match target {
-        Entry::Occupied(entry) => {
-            let creep_target = entry.get();
-            let task_done = match creep_target {
-                CreepTarget::Harvest(source_id) => harvest_energy(&creep, &source_id),
-                CreepTarget::Upgrade(controller_id) => upgrade_controller(&creep, &controller_id),
-                CreepTarget::Build(construction_id) => build_construction(&creep, &construction_id),
-                CreepTarget::Repair(structure_id) => repair_structure(&creep, &structure_id),
-                CreepTarget::TransferEnergyToSpawn(spawn_id) => transfer_energy(&creep, &spawn_id),
-                CreepTarget::TransferEnergyToExtention(extention_id) => {
-                    transfer_energy(&creep, &extention_id)
-                }
-            };
-            if task_done {
-                entry.remove();
-            }
-        }
-        Entry::Vacant(entry) => {
-            // no target, let's set one depending on role / if we have energy
-            let room = creep.room().expect("couldn't resolve creep room");
-
-            match get_creep_role(creep) {
-                Role::Upgrader => {
-                    if creep.store().get_free_capacity(Some(ResourceType::Energy)) == 0 {
-                        // Полностью заполнен - идём улучшать контроллер
-                        for structure in room.find(find::STRUCTURES, None).iter() {
-                            if let StructureObject::StructureController(controller) = structure {
-                                entry.insert(CreepTarget::Upgrade(controller.id()));
-                                break;
-                            }
-                        }
-                    } else {
-                        // Не заполнен - продолжаем собирать энергию
-                        if let Some(source) = room.find(find::SOURCES_ACTIVE, None).first() {
-                            entry.insert(CreepTarget::Harvest(source.id()));
-                        }
-                    }
-                }
-                Role::Builder => {
-                    if creep.store().get_free_capacity(Some(ResourceType::Energy)) == 0 {
-                        // Полностью заполнен - идём строить
-                        for construction_site in room.find(find::CONSTRUCTION_SITES, None).iter() {
-                            if let Some(id) = construction_site.try_id() {
-                                entry.insert(CreepTarget::Build(id));
-                                break;
-                            }
-                        }
-                    } else {
-                        // Не заполнен - продолжаем собирать энергию
-                        if let Some(source) = room.find(find::SOURCES_ACTIVE, None).first() {
-                            entry.insert(CreepTarget::Harvest(source.id()));
-                        }
-                    }
-                }
-                Role::Repairer => {
-                    if creep.store().get_free_capacity(Some(ResourceType::Energy)) == 0 {
-                        // Полностью заполнен - ищем самое повреждённое здание для ремонта
-                        let mut most_damaged_structure: Option<StructureObject> = None;
-                        let mut lowest_hits_ratio = 1.0; // 1.0 = полностью здоровое
-                        
-                        for structure in room.find(find::STRUCTURES, None).iter() {
-                            // Проверяем, что это ремонтируемая структура и не контроллер
-                            let structure_ref = structure.as_structure();
-                            if structure_ref.structure_type() != StructureType::Controller {
-                                let hits_ratio = structure_ref.hits() as f64 / structure_ref.hits_max() as f64;
-                                if hits_ratio < lowest_hits_ratio && hits_ratio < 1.0 {
-                                    lowest_hits_ratio = hits_ratio;
-                                    most_damaged_structure = Some(structure.clone());
-                                }
-                            }
-                        }
-                        
-                        if let Some(structure_obj) = most_damaged_structure {
-                            entry.insert(CreepTarget::Repair(structure_obj));
-                        }
-                    } else {
-                        // Не заполнен - продолжаем собирать энергию
-                        if let Some(source) = room.find(find::SOURCES_ACTIVE, None).first() {
-                            entry.insert(CreepTarget::Harvest(source.id()));
-                        }
-                    }
-                }
-                Role::Harvester => {
-                    if creep.store().get_free_capacity(Some(ResourceType::Energy)) == 0 {
-                        // Полностью заполнен - ищем куда передать энергию
-                        for structure in room.find(find::STRUCTURES, None).iter() {
-                            //TODO: filter instead of None
-                            if let StructureObject::StructureSpawn(spawn) = structure {
-                                if spawn.store().get_free_capacity(Some(ResourceType::Energy)) > 0 {
-                                    entry.insert(CreepTarget::TransferEnergyToSpawn(spawn.id()));
-                                    break;
-                                }
-                            };
-
-                            if let StructureObject::StructureExtension(extention) = structure {
-                                if extention.store().get_free_capacity(Some(ResourceType::Energy)) > 0 {
-                                entry.insert(CreepTarget::TransferEnergyToExtention(extention.id()));
-                                break;
-                                }
-                            };
-                        }
-                    } else if creep.store().get_used_capacity(Some(ResourceType::Energy)) > 0 {
-                        // Есть энергия, но хранилище не заполнено - продолжаем собирать
-                        if let Some(source) = room.find(find::SOURCES_ACTIVE, None).first() {
-                            entry.insert(CreepTarget::Harvest(source.id()));
-                        }
-                    } else {
-                        // Нет энергии - идём собирать
-                        if let Some(source) = room.find(find::SOURCES_ACTIVE, None).first() {
-                            entry.insert(CreepTarget::Harvest(source.id()));
-                        }
-                    }
-                }
-                _ => {
-                    warn!("Creep just suicided!!");
-                    creep.suicide();
-                }
-            }
-        }
-    }
-}
