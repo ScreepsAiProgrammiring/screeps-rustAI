@@ -1,5 +1,6 @@
 use crate::room_manager::RoomManager;
 use crate::creep_manager::CreepManager;
+use crate::tower_manager::TowerManager;
 
 use std::{
     cell::RefCell,
@@ -20,6 +21,7 @@ mod task_executor;
 mod creep_manager;
 mod spawn_manager;
 mod room_manager;
+mod tower_manager;
 
 
 
@@ -70,6 +72,10 @@ pub fn game_loop() {
     // Запускаем спавны
     debug!("running spawns");
     spawn_manager::SpawnManager::run_spawns();
+
+    // Запускаем башни
+    debug!("running towers");
+    TowerManager::run_towers();
 
     // Очистка памяти
     if game::time() % 1000 == 0 {

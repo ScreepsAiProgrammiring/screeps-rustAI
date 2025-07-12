@@ -4,6 +4,7 @@ use screeps::*;
 pub enum TaskType {
     TransferEnergyToSpawn,      // Передача энергии в Spawn
     TransferEnergyToExtension,  // Передача энергии в Extension
+    TransferEnergyToTower,      // Передача энергии в Tower
     UpgradeController,          // Улучшение контроллера
     Build,                      // Строительство (общая задача)
     Repair,                     // Ремонт структур (общая задача)

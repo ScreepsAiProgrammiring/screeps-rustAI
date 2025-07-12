@@ -43,6 +43,7 @@ impl TaskExecutor {
             let task_completed = match &task.task_type {
                 TaskType::TransferEnergyToSpawn => Self::execute_transfer_energy(creep, &task.target_id),
                 TaskType::TransferEnergyToExtension => Self::execute_transfer_energy(creep, &task.target_id),
+                TaskType::TransferEnergyToTower => Self::execute_transfer_energy(creep, &task.target_id),
                 TaskType::UpgradeController => Self::execute_upgrade_controller(creep, &task.target_id),
                 TaskType::Build => Self::execute_build(creep, &task.target_id),
                 TaskType::Repair => Self::execute_repair(creep, &task.target_id),
@@ -148,6 +149,37 @@ impl TaskExecutor {
                 warn!("Couldn't resolve extension!");
                 true // Задача завершена
             }
+        } else if let Ok(tower_id) = target_id.parse::<ObjectId<StructureTower>>() {
+            if let Some(tower) = tower_id.resolve() {
+                // Проверяем, нужна ли энергия в tower
+                let free_capacity = tower.store().get_free_capacity(Some(ResourceType::Energy));
+                if free_capacity == 0 {
+                    warn!("Tower {} full", target_id);
+                    return true; // Задача завершена - tower полный
+                }
+                
+                warn!("Transfer to tower {} ({})", target_id, free_capacity);
+                match creep.transfer(&tower, ResourceType::Energy, None) {
+                    Ok(_) => {
+                        warn!("Transferred to tower {}", target_id);
+                        false // Задача продолжается - продолжаем передавать
+                    }
+                    Err(e) => match e {
+                        screeps::action_error_codes::TransferErrorCode::NotInRange => {
+                            warn!("Moving to tower {}", target_id);
+                            let _ = creep.move_to(&tower);
+                            false // Задача продолжается
+                        }
+                        _ => {
+                            warn!("Couldn't transfer energy to tower: {:?}", e);
+                            true // Задача завершена с ошибкой
+                        }
+                    }
+                }
+            } else {
+                warn!("Couldn't resolve tower!");
+                true // Задача завершена
+            }
         } else {
             warn!("Invalid structure ID: {}", target_id);
             true // Задача завершена
@@ -224,52 +256,71 @@ impl TaskExecutor {
             return true; // Задача завершена - нет энергии
         }
 
+        warn!("{} attempting to repair structure: {}", creep.name(), target_id);
+
         // Пытаемся ремонтировать структуру (пробуем разные типы)
         if let Ok(structure_id) = target_id.parse::<ObjectId<StructureExtension>>() {
             if let Some(structure) = structure_id.resolve() {
+                warn!("{} repairing Extension", creep.name());
                 return Self::repair_structure(creep, &structure);
             }
         } else if let Ok(structure_id) = target_id.parse::<ObjectId<StructureSpawn>>() {
             if let Some(structure) = structure_id.resolve() {
+                warn!("{} repairing Spawn", creep.name());
                 return Self::repair_structure(creep, &structure);
             }
         } else if let Ok(structure_id) = target_id.parse::<ObjectId<StructureContainer>>() {
             if let Some(structure) = structure_id.resolve() {
+                warn!("{} repairing Container", creep.name());
                 return Self::repair_structure(creep, &structure);
             }
         } else if let Ok(structure_id) = target_id.parse::<ObjectId<StructureRoad>>() {
             if let Some(structure) = structure_id.resolve() {
+                warn!("{} repairing Road", creep.name());
                 return Self::repair_structure(creep, &structure);
             }
         } else if let Ok(structure_id) = target_id.parse::<ObjectId<StructureWall>>() {
             if let Some(structure) = structure_id.resolve() {
+                warn!("{} repairing Wall", creep.name());
                 return Self::repair_structure(creep, &structure);
             }
         } else if let Ok(structure_id) = target_id.parse::<ObjectId<StructureRampart>>() {
             if let Some(structure) = structure_id.resolve() {
+                warn!("{} repairing Rampart", creep.name());
                 return Self::repair_structure(creep, &structure);
             }
         }
 
-        warn!("Invalid structure ID: {}", target_id);
+        warn!("{} invalid structure ID: {}", creep.name(), target_id);
         true // Задача завершена
     }
 
     fn repair_structure<T: Repairable + HasPosition + AsRef<RoomObject>>(creep: &Creep, structure: &T) -> bool {
         // Проверяем, нужен ли ремонт
-        if structure.hits() >= structure.hits_max() {
+        let hits = structure.hits();
+        let hits_max = structure.hits_max();
+        let hits_ratio = hits as f64 / hits_max as f64;
+        
+        warn!("{} repairing structure: hits={}/{}, ratio={:.2}", creep.name(), hits, hits_max, hits_ratio);
+        
+        if hits >= hits_max {
+            warn!("{} structure is healthy, completing repair", creep.name());
             return true; // Задача завершена - структура здорова
         }
 
         match creep.repair(structure) {
-            Ok(_) => false, // Задача продолжается - продолжаем чинить
+            Ok(_) => {
+                warn!("{} repairing successfully", creep.name());
+                false // Задача продолжается - продолжаем чинить
+            }
             Err(e) => match e {
                 screeps::action_error_codes::CreepRepairErrorCode::NotInRange => {
+                    warn!("{} moving to structure for repair", creep.name());
                     let _ = creep.move_to(structure);
                     false // Задача продолжается
                 }
                 _ => {
-                    warn!("Couldn't repair: {:?}", e);
+                    warn!("{} couldn't repair: {:?}", creep.name(), e);
                     true // Задача завершена с ошибкой
                 }
             }

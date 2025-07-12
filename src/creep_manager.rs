@@ -47,6 +47,7 @@ impl CreepManager {
             let description = match task.task_type {
                 TaskType::TransferEnergyToSpawn => format!("Refilling spawn [{}]", &task.target_id[..5]),
                 TaskType::TransferEnergyToExtension => format!("Refilling extension [{}]", &task.target_id[..5]),
+                TaskType::TransferEnergyToTower => format!("Refilling tower [{}]", &task.target_id[..5]),
                 TaskType::UpgradeController => "Upgrading controller".to_string(),
                 TaskType::Build => format!("Building site [{}]", &task.target_id[..5]),
                 TaskType::Repair => format!("Repairing structure [{}]", &task.target_id[..5]),
@@ -85,6 +86,19 @@ impl CreepManager {
                             TaskType::TransferEnergyToExtension,
                             extension.id().to_string(),
                             Self::get_task_weight(TaskType::TransferEnergyToExtension)
+                        ));
+                    }
+                }
+            }
+
+            // Проверяем возможность передачи энергии в Tower
+            for structure in room.find(find::STRUCTURES, None).iter() {
+                if let screeps::enums::StructureObject::StructureTower(tower) = structure {
+                    if tower.store().get_free_capacity(Some(ResourceType::Energy)) > 0 {
+                        available_tasks.push((
+                            TaskType::TransferEnergyToTower,
+                            tower.id().to_string(),
+                            Self::get_task_weight(TaskType::TransferEnergyToTower)
                         ));
                     }
                 }
@@ -137,14 +151,20 @@ impl CreepManager {
                 if structure_ref.structure_type() != StructureType::Controller 
                    && structure_ref.structure_type() != StructureType::Wall
                    && structure_ref.structure_type() != StructureType::Rampart {
-                    let hits_ratio = structure_ref.hits() as f64 / structure_ref.hits_max() as f64;
-                    if hits_ratio < 0.5 {
-                        if let Some((_, current_ratio)) = most_damaged_structure {
-                            if hits_ratio < current_ratio {
+                    let hits = structure_ref.hits();
+                    let hits_max = structure_ref.hits_max();
+                    
+                    // Исключаем непостроенные и полностью здоровые структуры
+                    if hits > 0 && hits < hits_max {
+                        let hits_ratio = hits as f64 / hits_max as f64;
+                        if hits_ratio < 0.5 {
+                            if let Some((_, current_ratio)) = most_damaged_structure {
+                                if hits_ratio < current_ratio {
+                                    most_damaged_structure = Some((structure.clone(), hits_ratio));
+                                }
+                            } else {
                                 most_damaged_structure = Some((structure.clone(), hits_ratio));
                             }
-                        } else {
-                            most_damaged_structure = Some((structure.clone(), hits_ratio));
                         }
                     }
                 }
@@ -165,14 +185,20 @@ impl CreepManager {
                 let structure_ref = structure.as_structure();
                 if structure_ref.structure_type() == StructureType::Wall 
                    || structure_ref.structure_type() == StructureType::Rampart {
-                    let hits_ratio = structure_ref.hits() as f64 / structure_ref.hits_max() as f64;
-                    if hits_ratio < 0.5 {
-                        if let Some((_, current_ratio)) = most_damaged_wall {
-                            if hits_ratio < current_ratio {
+                    let hits = structure_ref.hits();
+                    let hits_max = structure_ref.hits_max();
+                    
+                    // Исключаем стены с 0 хитами (непостроенные) и полностью здоровые
+                    if hits > 0 && hits < hits_max {
+                        let hits_ratio = hits as f64 / hits_max as f64;
+                        if hits_ratio < 0.5 {
+                            if let Some((_, current_ratio)) = most_damaged_wall {
+                                if hits_ratio < current_ratio {
+                                    most_damaged_wall = Some((structure.clone(), hits_ratio));
+                                }
+                            } else {
                                 most_damaged_wall = Some((structure.clone(), hits_ratio));
                             }
-                        } else {
-                            most_damaged_wall = Some((structure.clone(), hits_ratio));
                         }
                     }
                 }
@@ -245,65 +271,78 @@ impl CreepManager {
         }
     }
 
-    /// Выбирает самую повреждённую структуру (кроме стен)
+    /// Выбирает случайную повреждённую структуру (кроме стен)
     fn select_most_damaged_structure(room: &Room) -> Option<String> {
-        let mut most_damaged_structure: Option<(String, f64)> = None;
+        let mut damaged_structures: Vec<(String, f64)> = Vec::new();
         
         for structure in room.find(find::STRUCTURES, None).iter() {
             let structure_ref = structure.as_structure();
             if structure_ref.structure_type() != StructureType::Controller 
                && structure_ref.structure_type() != StructureType::Wall
                && structure_ref.structure_type() != StructureType::Rampart {
-                let hits_ratio = structure_ref.hits() as f64 / structure_ref.hits_max() as f64;
-                if hits_ratio < 0.5 {
-                    if let Some((_, current_ratio)) = most_damaged_structure {
-                        if hits_ratio < current_ratio {
-                            most_damaged_structure = Some((structure_ref.id().to_string(), hits_ratio));
-                        }
-                    } else {
-                        most_damaged_structure = Some((structure_ref.id().to_string(), hits_ratio));
+                let hits = structure_ref.hits();
+                let hits_max = structure_ref.hits_max();
+                
+                // Исключаем непостроенные и полностью здоровые структуры
+                if hits > 0 && hits < hits_max {
+                    let hits_ratio = hits as f64 / hits_max as f64;
+                    if hits_ratio < 0.5 {
+                        damaged_structures.push((structure_ref.id().to_string(), hits_ratio));
                     }
                 }
             }
         }
         
-        most_damaged_structure.map(|(id, _)| id)
+        if damaged_structures.is_empty() {
+            None
+        } else {
+            // Выбираем случайную повреждённую структуру
+            let random_index = (js_sys::Math::random() * damaged_structures.len() as f64) as usize;
+            Some(damaged_structures[random_index].0.clone())
+        }
     }
 
-    /// Выбирает самую повреждённую стену
+    /// Выбирает случайную повреждённую стену
     fn select_most_damaged_wall(room: &Room) -> Option<String> {
-        let mut most_damaged_wall: Option<(String, f64)> = None;
+        let mut damaged_walls: Vec<(String, f64)> = Vec::new();
         
         for structure in room.find(find::STRUCTURES, None).iter() {
             let structure_ref = structure.as_structure();
             if structure_ref.structure_type() == StructureType::Wall 
                || structure_ref.structure_type() == StructureType::Rampart {
-                let hits_ratio = structure_ref.hits() as f64 / structure_ref.hits_max() as f64;
-                if hits_ratio < 0.5 {
-                    if let Some((_, current_ratio)) = most_damaged_wall {
-                        if hits_ratio < current_ratio {
-                            most_damaged_wall = Some((structure_ref.id().to_string(), hits_ratio));
-                        }
-                    } else {
-                        most_damaged_wall = Some((structure_ref.id().to_string(), hits_ratio));
+                let hits = structure_ref.hits();
+                let hits_max = structure_ref.hits_max();
+                
+                // Исключаем стены с 0 хитами (непостроенные) и полностью здоровые
+                if hits > 0 && hits < hits_max {
+                    let hits_ratio = hits as f64 / hits_max as f64;
+                    if hits_ratio < 0.5 {
+                        damaged_walls.push((structure_ref.id().to_string(), hits_ratio));
                     }
                 }
             }
         }
         
-        most_damaged_wall.map(|(id, _)| id)
+        if damaged_walls.is_empty() {
+            None
+        } else {
+            // Выбираем случайную повреждённую стену
+            let random_index = (js_sys::Math::random() * damaged_walls.len() as f64) as usize;
+            Some(damaged_walls[random_index].0.clone())
+        }
     }
 
     /// Возвращает базовый вес для каждого типа задачи
     /// Чем выше вес, тем выше вероятность выбора этой задачи
     fn get_task_weight(task_type: TaskType) -> f64 {
         match task_type {
-            TaskType::TransferEnergyToSpawn => 1.0,    // Высший приоритет - Spawn должен быть заполнен
-            TaskType::TransferEnergyToExtension => 0.8, // Средний приоритет
-            TaskType::UpgradeController => 0.7,         // Средний приоритет
-            TaskType::Build => 0.6,                     // Низкий приоритет
+            TaskType::TransferEnergyToSpawn => 0.5,    // Высший приоритет - Spawn должен быть заполнен
+            TaskType::TransferEnergyToExtension => 0.7, // Средний приоритет
+            TaskType::TransferEnergyToTower => 0.6,     // Высокий приоритет - башни важны для защиты
+            TaskType::UpgradeController => 1.0,         // Средний приоритет
+            TaskType::Build => 0.7,                     // Низкий приоритет
             TaskType::Repair => 0.4,                    // Ремонт структур
-            TaskType::RepairWalls => 0.3,               // Ремонт стен (самый низкий приоритет)
+            TaskType::RepairWalls => 0.4,               // Ремонт стен (самый низкий приоритет)
         }
     }
 
