@@ -2,7 +2,6 @@ use screeps::*;
 use std::collections::HashMap;
 use log::warn;
 use crate::command_system::{ActionBoard, ActionQueue, ActionQueueFactory};
-use crate::command_executor::ActionExecutor;
 
 pub struct CreepManager {
     pub assigned_queues: HashMap<String, ActionQueue>, // creep_name -> action_queue
@@ -26,7 +25,7 @@ impl CreepManager {
         if let Some(queue) = self.assigned_queues.get_mut(&creep_name) {
             // Выполняем текущую команду в последовательности
             if let Some(action) = queue.current_action() {
-                let action_completed = ActionExecutor::execute_action(creep, action);
+                let action_completed = action.execute(creep);
                 
                 if action_completed {
                     // Команда завершена, переходим к следующей
@@ -39,7 +38,7 @@ impl CreepManager {
                     } else {
                         // Обновляем описание текущей команды
                         if let Some(next_action) = queue.current_action() {
-                            let description = Self::get_action_description(next_action);
+                            let description = next_action.get_description();
                             let mut mem = creep.memory();
                             let _ = js_sys::Reflect::set(&mut mem, &wasm_bindgen::JsValue::from_str("current_action"), &wasm_bindgen::JsValue::from_str(&description));
                         }
@@ -54,20 +53,7 @@ impl CreepManager {
         }
     }
 
-    fn get_action_description(action: &crate::command_system::Action) -> String {
-        match &action.action_type {
-            crate::command_system::ActionType::HarvestEnergy => "Harvesting energy".to_string(),
-            crate::command_system::ActionType::TransferEnergyToSpawn => format!("Refilling spawn [{}]", &action.target_id.as_ref().unwrap_or(&"unknown".to_string())[..5]),
-            crate::command_system::ActionType::TransferEnergyToExtension => format!("Refilling extension [{}]", &action.target_id.as_ref().unwrap_or(&"unknown".to_string())[..5]),
-            crate::command_system::ActionType::TransferEnergyToTower => format!("Refilling tower [{}]", &action.target_id.as_ref().unwrap_or(&"unknown".to_string())[..5]),
-            crate::command_system::ActionType::UpgradeController => "Upgrading controller".to_string(),
-            crate::command_system::ActionType::Build => format!("Building site [{}]", &action.target_id.as_ref().unwrap_or(&"unknown".to_string())[..5]),
-            crate::command_system::ActionType::Repair => format!("Repairing structure [{}]", &action.target_id.as_ref().unwrap_or(&"unknown".to_string())[..5]),
-            crate::command_system::ActionType::RepairWalls => format!("Repairing wall [{}]", &action.target_id.as_ref().unwrap_or(&"unknown".to_string())[..5]),
-            crate::command_system::ActionType::MoveTo => "Moving to target".to_string(),
-            crate::command_system::ActionType::Wait => "Waiting".to_string(),
-        }
-    }
+
 
     fn generate_new_queue(&mut self, creep: &Creep, action_board: &mut ActionBoard) {
         let creep_name = creep.name();
@@ -76,7 +62,7 @@ impl CreepManager {
         if let Some(queue) = Self::generate_weighted_queue(action_board) {
             // Записываем описание первой команды в память крипа
             if let Some(first_action) = queue.current_action() {
-                let description = Self::get_action_description(first_action);
+                let description = first_action.get_description();
                 let mut mem = creep.memory();
                 let _ = js_sys::Reflect::set(&mut mem, &wasm_bindgen::JsValue::from_str("current_action"), &wasm_bindgen::JsValue::from_str(&description));
             }

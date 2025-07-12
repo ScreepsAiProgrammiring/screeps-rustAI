@@ -16,10 +16,7 @@ use screeps::{
 use wasm_bindgen::prelude::*;
 
 mod logging;
-mod task_system;
-mod task_executor;
 mod command_system;
-mod command_executor;
 mod creep_manager;
 mod spawn_manager;
 mod room_manager;
