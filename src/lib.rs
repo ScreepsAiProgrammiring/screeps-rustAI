@@ -18,6 +18,8 @@ use wasm_bindgen::prelude::*;
 mod logging;
 mod task_system;
 mod task_executor;
+mod command_system;
+mod command_executor;
 mod creep_manager;
 mod spawn_manager;
 mod room_manager;
@@ -59,8 +61,8 @@ pub fn game_loop() {
             debug!("running creeps");
             for creep in game::creeps().values() {
                 if let Some(room) = creep.room() {
-                    let task_board = room_manager.get_task_board(&room.name());
-                    creep_manager.run_creep(&creep, task_board);
+                    let action_board = room_manager.get_action_board(&room.name());
+                    creep_manager.run_creep(&creep, action_board);
                 }
             }
 

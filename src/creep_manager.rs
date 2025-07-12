@@ -1,77 +1,101 @@
 use screeps::*;
 use std::collections::HashMap;
-use crate::task_system::{TaskBoard, Task, TaskType};
-use crate::task_executor::TaskExecutor;
+use log::warn;
+use crate::command_system::{ActionBoard, ActionQueue, ActionQueueFactory};
+use crate::command_executor::ActionExecutor;
 
 pub struct CreepManager {
-    pub assigned_tasks: HashMap<String, Task>, // creep_name -> task
+    pub assigned_queues: HashMap<String, ActionQueue>, // creep_name -> action_queue
 }
 
 impl CreepManager {
     pub fn new() -> Self {
         Self {
-            assigned_tasks: HashMap::new(),
+            assigned_queues: HashMap::new(),
         }
     }
 
-    pub fn run_creep(&mut self, creep: &Creep, task_board: &mut TaskBoard) {
+    pub fn run_creep(&mut self, creep: &Creep, action_board: &mut ActionBoard) {
         if creep.spawning() {
             return;
         }
 
         let creep_name = creep.name();
         
-        // Проверяем, есть ли у крипа назначенная задача
-        if let Some(task) = self.assigned_tasks.get_mut(&creep_name) {
-            // Выполняем задачу
-            let task_completed = TaskExecutor::execute_task(creep, task);
-            
-            if task_completed {
-                // Задача завершена, освобождаем крипа
-                self.assigned_tasks.remove(&creep_name);
+        // Проверяем, есть ли у крипа назначенная последовательность команд
+        if let Some(queue) = self.assigned_queues.get_mut(&creep_name) {
+            // Выполняем текущую команду в последовательности
+            if let Some(action) = queue.current_action() {
+                let action_completed = ActionExecutor::execute_action(creep, action);
+                
+                if action_completed {
+                    // Команда завершена, переходим к следующей
+                    let has_more_actions = queue.next_action();
+                    
+                    if !has_more_actions {
+                        // Последовательность завершена, освобождаем крипа
+                        self.assigned_queues.remove(&creep_name);
+                        warn!("{} completed action queue", creep_name);
+                    } else {
+                        // Обновляем описание текущей команды
+                        if let Some(next_action) = queue.current_action() {
+                            let description = Self::get_action_description(next_action);
+                            let mut mem = creep.memory();
+                            let _ = js_sys::Reflect::set(&mut mem, &wasm_bindgen::JsValue::from_str("current_action"), &wasm_bindgen::JsValue::from_str(&description));
+                        }
+                    }
+                }
             }
         }
 
-        // Если у крипа нет задачи, генерируем новую
-        if !self.assigned_tasks.contains_key(&creep_name) {
-            self.generate_new_task(creep, task_board);
+        // Если у крипа нет последовательности команд, генерируем новую
+        if !self.assigned_queues.contains_key(&creep_name) {
+            self.generate_new_queue(creep, action_board);
         }
     }
 
-    fn generate_new_task(&mut self, creep: &Creep, task_board: &mut TaskBoard) {
+    fn get_action_description(action: &crate::command_system::Action) -> String {
+        match &action.action_type {
+            crate::command_system::ActionType::HarvestEnergy => "Harvesting energy".to_string(),
+            crate::command_system::ActionType::TransferEnergyToSpawn => format!("Refilling spawn [{}]", &action.target_id.as_ref().unwrap_or(&"unknown".to_string())[..5]),
+            crate::command_system::ActionType::TransferEnergyToExtension => format!("Refilling extension [{}]", &action.target_id.as_ref().unwrap_or(&"unknown".to_string())[..5]),
+            crate::command_system::ActionType::TransferEnergyToTower => format!("Refilling tower [{}]", &action.target_id.as_ref().unwrap_or(&"unknown".to_string())[..5]),
+            crate::command_system::ActionType::UpgradeController => "Upgrading controller".to_string(),
+            crate::command_system::ActionType::Build => format!("Building site [{}]", &action.target_id.as_ref().unwrap_or(&"unknown".to_string())[..5]),
+            crate::command_system::ActionType::Repair => format!("Repairing structure [{}]", &action.target_id.as_ref().unwrap_or(&"unknown".to_string())[..5]),
+            crate::command_system::ActionType::RepairWalls => format!("Repairing wall [{}]", &action.target_id.as_ref().unwrap_or(&"unknown".to_string())[..5]),
+            crate::command_system::ActionType::MoveTo => "Moving to target".to_string(),
+            crate::command_system::ActionType::Wait => "Waiting".to_string(),
+        }
+    }
+
+    fn generate_new_queue(&mut self, creep: &Creep, action_board: &mut ActionBoard) {
         let creep_name = creep.name();
         
-        // Генерируем новую задачу с использованием взвешенного рандома
-        if let Some(task) = Self::generate_weighted_task(task_board) {
-            // Записываем описание задачи в память крипа
-            let description = match task.task_type {
-                TaskType::TransferEnergyToSpawn => format!("Refilling spawn [{}]", &task.target_id[..5]),
-                TaskType::TransferEnergyToExtension => format!("Refilling extension [{}]", &task.target_id[..5]),
-                TaskType::TransferEnergyToTower => format!("Refilling tower [{}]", &task.target_id[..5]),
-                TaskType::UpgradeController => "Upgrading controller".to_string(),
-                TaskType::Build => format!("Building site [{}]", &task.target_id[..5]),
-                TaskType::Repair => format!("Repairing structure [{}]", &task.target_id[..5]),
-                TaskType::RepairWalls => format!("Repairing wall [{}]", &task.target_id[..5]),
-            };
-            let mut mem = creep.memory();
-            let _ = js_sys::Reflect::set(&mut mem, &wasm_bindgen::JsValue::from_str("current_task"), &wasm_bindgen::JsValue::from_str(&description));
-            self.assigned_tasks.insert(creep_name, task);
+        // Генерируем новую последовательность команд с использованием взвешенного рандома
+        if let Some(queue) = Self::generate_weighted_queue(action_board) {
+            // Записываем описание первой команды в память крипа
+            if let Some(first_action) = queue.current_action() {
+                let description = Self::get_action_description(first_action);
+                let mut mem = creep.memory();
+                let _ = js_sys::Reflect::set(&mut mem, &wasm_bindgen::JsValue::from_str("current_action"), &wasm_bindgen::JsValue::from_str(&description));
+            }
+            self.assigned_queues.insert(creep_name, queue);
         }
     }
 
-    fn generate_weighted_task(task_board: &TaskBoard) -> Option<Task> {
-        if let Some(room) = game::rooms().get(task_board.room_name) {
-            // Определяем доступные типы задач и их веса
-            let mut available_tasks: Vec<(TaskType, String, f64)> = Vec::new();
+    fn generate_weighted_queue(action_board: &ActionBoard) -> Option<ActionQueue> {
+        if let Some(room) = game::rooms().get(action_board.room_name) {
+            // Определяем доступные типы последовательностей и их веса
+            let mut available_queues: Vec<(String, f64)> = Vec::new();
             
             // Проверяем возможность передачи энергии в Spawn
             for structure in room.find(find::STRUCTURES, None).iter() {
                 if let screeps::enums::StructureObject::StructureSpawn(spawn) = structure {
                     if spawn.store().get_free_capacity(Some(ResourceType::Energy)) > 0 {
-                        available_tasks.push((
-                            TaskType::TransferEnergyToSpawn,
+                        available_queues.push((
                             spawn.id().to_string(),
-                            Self::get_task_weight(TaskType::TransferEnergyToSpawn)
+                            Self::get_queue_weight("transfer_energy_to_spawn")
                         ));
                         break; // Только один Spawn
                     }
@@ -82,10 +106,9 @@ impl CreepManager {
             for structure in room.find(find::STRUCTURES, None).iter() {
                 if let screeps::enums::StructureObject::StructureExtension(extension) = structure {
                     if extension.store().get_free_capacity(Some(ResourceType::Energy)) > 0 {
-                        available_tasks.push((
-                            TaskType::TransferEnergyToExtension,
+                        available_queues.push((
                             extension.id().to_string(),
-                            Self::get_task_weight(TaskType::TransferEnergyToExtension)
+                            Self::get_queue_weight("transfer_energy_to_extension")
                         ));
                     }
                 }
@@ -95,10 +118,9 @@ impl CreepManager {
             for structure in room.find(find::STRUCTURES, None).iter() {
                 if let screeps::enums::StructureObject::StructureTower(tower) = structure {
                     if tower.store().get_free_capacity(Some(ResourceType::Energy)) > 0 {
-                        available_tasks.push((
-                            TaskType::TransferEnergyToTower,
+                        available_queues.push((
                             tower.id().to_string(),
-                            Self::get_task_weight(TaskType::TransferEnergyToTower)
+                            Self::get_queue_weight("transfer_energy_to_tower")
                         ));
                     }
                 }
@@ -120,10 +142,9 @@ impl CreepManager {
             if has_energy_storage {
                 for structure in room.find(find::STRUCTURES, None).iter() {
                     if let screeps::enums::StructureObject::StructureController(controller) = structure {
-                        available_tasks.push((
-                            TaskType::UpgradeController,
+                        available_queues.push((
                             controller.id().to_string(),
-                            Self::get_task_weight(TaskType::UpgradeController)
+                            Self::get_queue_weight("upgrade_controller")
                         ));
                         break; // Только один контроллер
                     }
@@ -136,121 +157,52 @@ impl CreepManager {
                 .collect();
             
             if !construction_sites.is_empty() {
-                available_tasks.push((
-                    TaskType::Build,
-                    "construction_sites".to_string(), // Заглушка, реальная стройплощадка выберется позже
-                    Self::get_task_weight(TaskType::Build)
-                ));
+                if let Some(site_id) = Self::select_random_construction_site(&room) {
+                    available_queues.push((
+                        site_id,
+                        Self::get_queue_weight("build")
+                    ));
+                }
             }
 
             // Проверяем возможность ремонта структур (кроме стен)
-            let mut most_damaged_structure: Option<(screeps::enums::StructureObject, f64)> = None;
-            
-            for structure in room.find(find::STRUCTURES, None).iter() {
-                let structure_ref = structure.as_structure();
-                if structure_ref.structure_type() != StructureType::Controller 
-                   && structure_ref.structure_type() != StructureType::Wall
-                   && structure_ref.structure_type() != StructureType::Rampart {
-                    let hits = structure_ref.hits();
-                    let hits_max = structure_ref.hits_max();
-                    
-                    // Исключаем непостроенные и полностью здоровые структуры
-                    if hits > 0 && hits < hits_max {
-                        let hits_ratio = hits as f64 / hits_max as f64;
-                        if hits_ratio < 0.5 {
-                            if let Some((_, current_ratio)) = most_damaged_structure {
-                                if hits_ratio < current_ratio {
-                                    most_damaged_structure = Some((structure.clone(), hits_ratio));
-                                }
-                            } else {
-                                most_damaged_structure = Some((structure.clone(), hits_ratio));
-                            }
-                        }
-                    }
-                }
-            }
-            
-            if let Some((structure, _damage_ratio)) = most_damaged_structure {
-                available_tasks.push((
-                    TaskType::Repair,
-                    "damaged_structure".to_string(), // Заглушка, реальная структура выберется позже
-                    Self::get_task_weight(TaskType::Repair)
+            if let Some(structure_id) = Self::select_most_damaged_structure(&room) {
+                available_queues.push((
+                    structure_id,
+                    Self::get_queue_weight("repair")
                 ));
             }
 
             // Проверяем возможность ремонта стен
-            let mut most_damaged_wall: Option<(screeps::enums::StructureObject, f64)> = None;
-            
-            for structure in room.find(find::STRUCTURES, None).iter() {
-                let structure_ref = structure.as_structure();
-                if structure_ref.structure_type() == StructureType::Wall 
-                   || structure_ref.structure_type() == StructureType::Rampart {
-                    let hits = structure_ref.hits();
-                    let hits_max = structure_ref.hits_max();
-                    
-                    // Исключаем стены с 0 хитами (непостроенные) и полностью здоровые
-                    if hits > 0 && hits < hits_max {
-                        let hits_ratio = hits as f64 / hits_max as f64;
-                        if hits_ratio < 0.5 {
-                            if let Some((_, current_ratio)) = most_damaged_wall {
-                                if hits_ratio < current_ratio {
-                                    most_damaged_wall = Some((structure.clone(), hits_ratio));
-                                }
-                            } else {
-                                most_damaged_wall = Some((structure.clone(), hits_ratio));
-                            }
-                        }
-                    }
-                }
-            }
-            
-            if let Some((wall, _damage_ratio)) = most_damaged_wall {
-                available_tasks.push((
-                    TaskType::RepairWalls,
-                    "damaged_wall".to_string(), // Заглушка, реальная стена выберется позже
-                    Self::get_task_weight(TaskType::RepairWalls)
+            if let Some(wall_id) = Self::select_most_damaged_wall(&room) {
+                available_queues.push((
+                    wall_id,
+                    Self::get_queue_weight("repair_walls")
                 ));
             }
 
-            // Выбираем задачу с использованием правильного взвешенного рандома
-            if !available_tasks.is_empty() {
-                let total_weight: f64 = available_tasks.iter().map(|(_, _, weight)| weight).sum();
+            // Выбираем последовательность с использованием взвешенного рандома
+            if !available_queues.is_empty() {
+                let total_weight: f64 = available_queues.iter().map(|(_, weight)| weight).sum();
                 
                 if total_weight > 0.0 {
-                    // Используем Math.random() для правильного рандома
                     let random_value = js_sys::Math::random() * total_weight;
                     let mut current_weight = 0.0;
                     
-                    for (task_type, target_id, weight) in &available_tasks {
+                    for (target_id, weight) in &available_queues {
                         current_weight += weight;
                         if random_value <= current_weight {
-                            // Выбираем конкретную цель для задач, которые требуют дополнительного выбора
-                            let final_target_id = match task_type {
-                                TaskType::Build => Self::select_random_construction_site(&room),
-                                TaskType::Repair => Self::select_most_damaged_structure(&room),
-                                TaskType::RepairWalls => Self::select_most_damaged_wall(&room),
-                                _ => Some(target_id.clone()),
-                            };
-                            
-                            if let Some(final_id) = final_target_id {
-                                return Some(Task::new(task_type.clone(), final_id));
-                            }
+                            // Определяем тип последовательности по весу
+                            let queue_type = Self::get_queue_type_by_weight(*weight);
+                            return Self::create_queue_by_type(queue_type, target_id.clone());
                         }
                     }
                 }
                 
-                // Если что-то пошло не так, возвращаем первую доступную задачу
-                let (task_type, target_id, _weight) = &available_tasks[0];
-                let final_target_id = match task_type {
-                    TaskType::Build => Self::select_random_construction_site(&room),
-                    TaskType::Repair => Self::select_most_damaged_structure(&room),
-                    TaskType::RepairWalls => Self::select_most_damaged_wall(&room),
-                    _ => Some(target_id.clone()),
-                };
-                
-                if let Some(final_id) = final_target_id {
-                    return Some(Task::new(task_type.clone(), final_id));
-                }
+                // Если что-то пошло не так, возвращаем первую доступную последовательность
+                let (target_id, weight) = &available_queues[0];
+                let queue_type = Self::get_queue_type_by_weight(*weight);
+                return Self::create_queue_by_type(queue_type, target_id.clone());
             }
         }
         
@@ -332,31 +284,57 @@ impl CreepManager {
         }
     }
 
-    /// Возвращает базовый вес для каждого типа задачи
-    /// Чем выше вес, тем выше вероятность выбора этой задачи
-    fn get_task_weight(task_type: TaskType) -> f64 {
-        match task_type {
-            TaskType::TransferEnergyToSpawn => 0.5,    // Высший приоритет - Spawn должен быть заполнен
-            TaskType::TransferEnergyToExtension => 0.7, // Средний приоритет
-            TaskType::TransferEnergyToTower => 0.6,     // Высокий приоритет - башни важны для защиты
-            TaskType::UpgradeController => 1.0,         // Средний приоритет
-            TaskType::Build => 0.7,                     // Низкий приоритет
-            TaskType::Repair => 0.4,                    // Ремонт структур
-            TaskType::RepairWalls => 0.4,               // Ремонт стен (самый низкий приоритет)
+    /// Возвращает базовый вес для каждого типа последовательности
+    /// Чем выше вес, тем выше вероятность выбора этой последовательности
+    fn get_queue_weight(queue_type: &str) -> f64 {
+        match queue_type {
+            "transfer_energy_to_spawn" => 0.5,    // Высший приоритет - Spawn должен быть заполнен
+            "transfer_energy_to_extension" => 0.7, // Средний приоритет
+            "transfer_energy_to_tower" => 0.6,     // Высокий приоритет - башни важны для защиты
+            "upgrade_controller" => 1.0,           // Средний приоритет
+            "build" => 0.7,                        // Низкий приоритет
+            "repair" => 0.4,                       // Ремонт структур
+            "repair_walls" => 0.4,                 // Ремонт стен (самый низкий приоритет)
+            _ => 0.5,                              // По умолчанию
+        }
+    }
+
+    /// Определяет тип последовательности по весу
+    fn get_queue_type_by_weight(weight: f64) -> &'static str {
+        if (weight - 0.5).abs() < 0.01 { "transfer_energy_to_spawn" }
+        else if (weight - 0.7).abs() < 0.01 { "transfer_energy_to_extension" }
+        else if (weight - 0.6).abs() < 0.01 { "transfer_energy_to_tower" }
+        else if (weight - 1.0).abs() < 0.01 { "upgrade_controller" }
+        else if (weight - 0.7).abs() < 0.01 { "build" }
+        else if (weight - 0.4).abs() < 0.01 { "repair" }
+        else { "transfer_energy_to_spawn" } // По умолчанию
+    }
+
+    /// Создаёт последовательность команд по типу
+    fn create_queue_by_type(queue_type: &str, target_id: String) -> Option<ActionQueue> {
+        match queue_type {
+            "transfer_energy_to_spawn" => Some(ActionQueueFactory::transfer_energy_sequence(target_id)),
+            "transfer_energy_to_extension" => Some(ActionQueueFactory::transfer_energy_to_extension_sequence(target_id)),
+            "transfer_energy_to_tower" => Some(ActionQueueFactory::transfer_energy_to_tower_sequence(target_id)),
+            "upgrade_controller" => Some(ActionQueueFactory::upgrade_controller_sequence(target_id)),
+            "build" => Some(ActionQueueFactory::build_sequence(target_id)),
+            "repair" => Some(ActionQueueFactory::repair_sequence(target_id)),
+            "repair_walls" => Some(ActionQueueFactory::repair_walls_sequence(target_id)),
+            _ => None,
         }
     }
 
     pub fn cleanup_dead_creeps(&mut self) {
         let mut to_remove = Vec::new();
         
-        for creep_name in self.assigned_tasks.keys() {
+        for creep_name in self.assigned_queues.keys() {
             if !game::creeps().keys().any(|name| name == *creep_name) {
                 to_remove.push(creep_name.clone());
             }
         }
         
         for creep_name in to_remove {
-            self.assigned_tasks.remove(&creep_name);
+            self.assigned_queues.remove(&creep_name);
         }
     }
 } 
