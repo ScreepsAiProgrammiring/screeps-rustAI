@@ -103,42 +103,40 @@ impl Repairer for StructureTower {
 
 // Конкретные типы действий
 #[derive(Clone, Debug)]
-pub struct HarvestEnergyAction;
+pub enum EnergySourceTarget {
+    Source(screeps::objects::Source),
+}
+
+#[derive(Clone, Debug)]
+pub struct HarvestEnergyAction {
+    pub target: EnergySourceTarget,
+}
 
 impl CreepAction for HarvestEnergyAction {
     fn execute(&self, creep: &Creep) -> bool {
-        // Проверяем, есть ли место для энергии
         if creep.store().get_free_capacity(Some(ResourceType::Energy)) == 0 {
-            return true; // Бак полный - команда завершена
+            return true;
         }
-
-        // Ищем ближайший источник энергии
-        if let Some(room) = creep.room() {
-            if let Some(source) = room.find(find::SOURCES_ACTIVE, None).first() {
+        match &self.target {
+            EnergySourceTarget::Source(source) => {
                 if creep.pos().is_near_to(source.pos()) {
                     match creep.harvest(source) {
-                        Ok(_) => false, // Команда продолжается - продолжаем собирать
+                        Ok(_) => false,
                         Err(e) => {
                             log::warn!("Couldn't harvest: {:?}", e);
-                            true // Команда завершена с ошибкой
+                            true
                         }
                     }
                 } else {
                     let _ = creep.move_to(&source);
-                    false // Команда продолжается - идём к источнику
+                    false
                 }
-            } else {
-                log::warn!("No active sources found!");
-                true // Команда завершена - нет источников
             }
-        } else {
-            log::warn!("Creep has no room!");
-            true // Команда завершена
         }
     }
 
     fn get_description(&self) -> String {
-        "Harvesting energy".to_string()
+        "Harvesting energy from source".to_string()
     }
 }
 
@@ -460,51 +458,51 @@ impl ActionQueue {
 pub struct ActionQueueFactory;
 
 impl ActionQueueFactory {
-    pub fn transfer_energy_sequence(target_id: String) -> ActionQueue {
+    pub fn transfer_energy_sequence(energy_target: EnergySourceTarget, target_id: String) -> ActionQueue {
         let mut queue = ActionQueue::new();
-        queue.add_action(Box::new(HarvestEnergyAction));
+        queue.add_action(Box::new(HarvestEnergyAction { target: energy_target.clone() }));
         queue.add_action(Box::new(TransferEnergyToSpawnAction { target_id }));
         queue
     }
     
-    pub fn transfer_energy_to_extension_sequence(target_id: String) -> ActionQueue {
+    pub fn transfer_energy_to_extension_sequence(energy_target: EnergySourceTarget, target_id: String) -> ActionQueue {
         let mut queue = ActionQueue::new();
-        queue.add_action(Box::new(HarvestEnergyAction));
+        queue.add_action(Box::new(HarvestEnergyAction { target: energy_target.clone() }));
         queue.add_action(Box::new(TransferEnergyToExtensionAction { target_id }));
         queue
     }
     
-    pub fn transfer_energy_to_tower_sequence(target_id: String) -> ActionQueue {
+    pub fn transfer_energy_to_tower_sequence(energy_target: EnergySourceTarget, target_id: String) -> ActionQueue {
         let mut queue = ActionQueue::new();
-        queue.add_action(Box::new(HarvestEnergyAction));
+        queue.add_action(Box::new(HarvestEnergyAction { target: energy_target.clone() }));
         queue.add_action(Box::new(TransferEnergyToTowerAction { target_id }));
         queue
     }
     
-    pub fn upgrade_controller_sequence(target_id: String) -> ActionQueue {
+    pub fn upgrade_controller_sequence(energy_target: EnergySourceTarget, target_id: String) -> ActionQueue {
         let mut queue = ActionQueue::new();
-        queue.add_action(Box::new(HarvestEnergyAction));
+        queue.add_action(Box::new(HarvestEnergyAction { target: energy_target.clone() }));
         queue.add_action(Box::new(UpgradeControllerAction { target_id }));
         queue
     }
     
-    pub fn build_sequence(target_id: String) -> ActionQueue {
+    pub fn build_sequence(energy_target: EnergySourceTarget, target_id: String) -> ActionQueue {
         let mut queue = ActionQueue::new();
-        queue.add_action(Box::new(HarvestEnergyAction));
+        queue.add_action(Box::new(HarvestEnergyAction { target: energy_target.clone() }));
         queue.add_action(Box::new(BuildAction { target_id }));
         queue
     }
     
-    pub fn repair_sequence(target_id: String) -> ActionQueue {
+    pub fn repair_sequence(energy_target: EnergySourceTarget, target_id: String) -> ActionQueue {
         let mut queue = ActionQueue::new();
-        queue.add_action(Box::new(HarvestEnergyAction));
+        queue.add_action(Box::new(HarvestEnergyAction { target: energy_target.clone() }));
         queue.add_action(Box::new(RepairAction { target_id }));
         queue
     }
     
-    pub fn repair_walls_sequence(target_id: String) -> ActionQueue {
+    pub fn repair_walls_sequence(energy_target: EnergySourceTarget, target_id: String) -> ActionQueue {
         let mut queue = ActionQueue::new();
-        queue.add_action(Box::new(HarvestEnergyAction));
+        queue.add_action(Box::new(HarvestEnergyAction { target: energy_target.clone() }));
         queue.add_action(Box::new(RepairAction { target_id }));
         queue
     }

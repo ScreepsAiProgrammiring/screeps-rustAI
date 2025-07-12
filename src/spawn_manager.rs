@@ -9,7 +9,7 @@ impl SpawnManager {
             debug!("running spawn {}", spawn.name());
             
             // Проверяем, есть ли энергия для создания крипа
-            let body = [Part::Move, Part::Carry, Part::Carry, Part::Carry, Part::Work];
+            let body = [Part::Move, Part::Carry, Part::Carry, Part::Carry, Part::Work, Part::Work, Part::Work];
             let body_cost: u32 = body.iter().map(|p| p.cost()).sum();
             
             if spawn.room().unwrap().energy_available() >= body_cost {

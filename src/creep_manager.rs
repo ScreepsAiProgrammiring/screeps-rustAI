@@ -1,7 +1,7 @@
 use screeps::*;
 use std::collections::HashMap;
 use log::warn;
-use crate::command_system::{ActionBoard, ActionQueue, ActionQueueFactory};
+use crate::command_system::{ActionBoard, ActionQueue, ActionQueueFactory, EnergySourceTarget, HarvestEnergyAction};
 
 pub struct CreepManager {
     pub assigned_queues: HashMap<String, ActionQueue>, // creep_name -> action_queue
@@ -26,6 +26,10 @@ impl CreepManager {
             // Выполняем текущую команду в последовательности
             if let Some(action) = queue.current_action() {
                 let action_completed = action.execute(creep);
+                
+                // Логируем текущее действие крипа
+                let description = action.get_description();
+                log::info!("{}: {}", creep_name, description);
                 
                 if action_completed {
                     // Команда завершена, переходим к следующей
@@ -57,10 +61,25 @@ impl CreepManager {
 
     fn generate_new_queue(&mut self, creep: &Creep, action_board: &mut ActionBoard) {
         let creep_name = creep.name();
-        
-        // Генерируем новую последовательность команд с использованием взвешенного рандома
-        if let Some(queue) = Self::generate_weighted_queue(action_board) {
-            // Записываем описание первой команды в память крипа
+        if let Some(room) = creep.room() {
+            // Находим ближайший активный источник энергии
+            let sources = room.find(find::SOURCES_ACTIVE, None);
+            if let Some(closest_source) = sources.iter().min_by_key(|source| creep.pos().get_range_to(source.pos())) {
+                let energy_source = EnergySourceTarget::Source(closest_source.clone());
+                // Создаём полную очередь: сбор энергии + передача энергии
+                if let Some(queue) = Self::generate_weighted_queue(action_board, creep, Some(energy_source)) {
+                    if let Some(first_action) = queue.current_action() {
+                        let description = first_action.get_description();
+                        let mut mem = creep.memory();
+                        let _ = js_sys::Reflect::set(&mut mem, &wasm_bindgen::JsValue::from_str("current_action"), &wasm_bindgen::JsValue::from_str(&description));
+                    }
+                    self.assigned_queues.insert(creep_name, queue);
+                    return;
+                }
+            }
+        }
+        // Если нет источников или комнаты, fallback на старую логику
+        if let Some(queue) = Self::generate_weighted_queue(action_board, creep, None) {
             if let Some(first_action) = queue.current_action() {
                 let description = first_action.get_description();
                 let mut mem = creep.memory();
@@ -70,7 +89,7 @@ impl CreepManager {
         }
     }
 
-    fn generate_weighted_queue(action_board: &ActionBoard) -> Option<ActionQueue> {
+    fn generate_weighted_queue(action_board: &ActionBoard, creep: &Creep, energy_source: Option<EnergySourceTarget>) -> Option<ActionQueue> {
         if let Some(room) = game::rooms().get(action_board.room_name) {
             // Определяем доступные типы последовательностей и их веса
             let mut available_queues: Vec<(String, f64)> = Vec::new();
@@ -180,7 +199,7 @@ impl CreepManager {
                         if random_value <= current_weight {
                             // Определяем тип последовательности по весу
                             let queue_type = Self::get_queue_type_by_weight(*weight);
-                            return Self::create_queue_by_type(queue_type, target_id.clone());
+                            return Self::create_queue_by_type(queue_type, target_id.clone(), creep, energy_source);
                         }
                     }
                 }
@@ -188,7 +207,7 @@ impl CreepManager {
                 // Если что-то пошло не так, возвращаем первую доступную последовательность
                 let (target_id, weight) = &available_queues[0];
                 let queue_type = Self::get_queue_type_by_weight(*weight);
-                return Self::create_queue_by_type(queue_type, target_id.clone());
+                return Self::create_queue_by_type(queue_type, target_id.clone(), creep, energy_source);
             }
         }
         
@@ -297,15 +316,32 @@ impl CreepManager {
     }
 
     /// Создаёт последовательность команд по типу
-    fn create_queue_by_type(queue_type: &str, target_id: String) -> Option<ActionQueue> {
+    fn create_queue_by_type(queue_type: &str, target_id: String, creep: &Creep, energy_source: Option<EnergySourceTarget>) -> Option<ActionQueue> {
+        // Находим ближайший источник энергии для крипа
+        let energy_target = match energy_source {
+            Some(source) => source,
+            None => {
+                if let Some(room) = creep.room() {
+                    let sources = room.find(find::SOURCES_ACTIVE, None);
+                    if let Some(closest_source) = sources.iter().min_by_key(|source| creep.pos().get_range_to(source.pos())) {
+                        EnergySourceTarget::Source(closest_source.clone())
+                    } else {
+                        return None;
+                    }
+                } else {
+                    return None;
+                }
+            }
+        };
+
         match queue_type {
-            "transfer_energy_to_spawn" => Some(ActionQueueFactory::transfer_energy_sequence(target_id)),
-            "transfer_energy_to_extension" => Some(ActionQueueFactory::transfer_energy_to_extension_sequence(target_id)),
-            "transfer_energy_to_tower" => Some(ActionQueueFactory::transfer_energy_to_tower_sequence(target_id)),
-            "upgrade_controller" => Some(ActionQueueFactory::upgrade_controller_sequence(target_id)),
-            "build" => Some(ActionQueueFactory::build_sequence(target_id)),
-            "repair" => Some(ActionQueueFactory::repair_sequence(target_id)),
-            "repair_walls" => Some(ActionQueueFactory::repair_walls_sequence(target_id)),
+            "transfer_energy_to_spawn" => Some(ActionQueueFactory::transfer_energy_sequence(energy_target, target_id)),
+            "transfer_energy_to_extension" => Some(ActionQueueFactory::transfer_energy_to_extension_sequence(energy_target, target_id)),
+            "transfer_energy_to_tower" => Some(ActionQueueFactory::transfer_energy_to_tower_sequence(energy_target, target_id)),
+            "upgrade_controller" => Some(ActionQueueFactory::upgrade_controller_sequence(energy_target, target_id)),
+            "build" => Some(ActionQueueFactory::build_sequence(energy_target, target_id)),
+            "repair" => Some(ActionQueueFactory::repair_sequence(energy_target, target_id)),
+            "repair_walls" => Some(ActionQueueFactory::repair_walls_sequence(energy_target, target_id)),
             _ => None,
         }
     }
